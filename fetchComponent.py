@@ -5,6 +5,7 @@ import json
 import re
 import pcbnew
 import os
+import shutil
 import subprocess
 import click
 from tempfile import TemporaryDirectory
@@ -12,6 +13,27 @@ from pathlib import Path
 
 class FormatError(RuntimeError):
     pass
+
+
+class KicadSymbol:
+    def __init__(self, raw_data):
+        self.data = raw_data.split('\n')
+
+    def addField(field, data):
+        pass
+
+
+def postProcessSymbol(kicadSymbol, partName):
+    os.rename(kicadSymbol, f"{partName}.lib")
+
+    with open(f"{partName}.lib", 'r') as file:
+        raw_data = file.read()
+    
+    symbol = KicadSymbol(raw_data)
+    
+
+    return f"{partName}.lib"
+
 
 def easyEdaHeaders(token):
     return {
@@ -142,6 +164,18 @@ def buildPackageBoard(packageInfo):
     board["shape"] = [shape]
     return board
 
+def parseLC2KiCadOutput(text):
+    foo = text.decode("utf-8")
+    ans_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    data = ans_escape.sub('', foo)
+    #print(data)
+    for line in data.split('\n'):
+        if "Write file" in line:
+            data = line.split()
+            filename = data[3].replace('\"', '').replace('...', '')
+            return filename
+
+
 def easyEdaToKicad(symbolJson, boardJson):
     """
     Convert board JSON, return pcbnew.BOARD
@@ -155,8 +189,13 @@ def easyEdaToKicad(symbolJson, boardJson):
         with open(boardFilename, "w") as easyFile:
             easyFile.write(json.dumps(boardJson, indent=4))
         subprocess.check_call(["easyeda2kicad", boardFilename, kicadFilename])
-        os.system("./LC2KiCad/build/lc2kicad -v " + symbolFilename + " -a ENL:1")
-        return pcbnew.LoadBoard(kicadFilename)
+
+        out = subprocess.check_output(["./LC2KiCad/build/lc2kicad", "-v", symbolFilename, "-a", "ENL:1"], stderr=subprocess.STDOUT)
+
+        symbolName = parseLC2KiCadOutput(out)
+        print(f"Symbol name: {symbolName}")
+
+        return pcbnew.LoadBoard(kicadFilename), symbolName
 
 def validateLibName(lib):
     if not lib.endswith(".pretty"):
@@ -201,17 +240,22 @@ def footprintExists(lib, name):
     # PCB_IO().FootprintExists behaves strangely, thus, we implement it ourselves
     return os.path.exists(os.path.join(lib, name + ".kicad_mod"))
 
+
+
+
+
 def fetchAndConvert(componentInfo, token, cookies):
     uuid = componentInfo["dataStr"]["head"]["uuid"]
     details = fetchCompnentDetails(uuid, token, cookies)
     schSymbol = getComponentSymbol(details)
     package = getComponentPackage(details)
     packageBoard = buildPackageBoard(package)
-    kicadBoard = easyEdaToKicad(schSymbol, packageBoard)
+    kicadBoard, kicadSymbol = easyEdaToKicad(schSymbol, packageBoard)
     footprint = extractFirstFootprint(kicadBoard)
     postProcessFootprint(footprint)
+    symbol = postProcessSymbol(kicadSymbol, componentInfo["title"])
 
-    return details, footprint
+    return details, footprint, symbol
 
 def fetchAndConvert3D(componentDetail, kicadlib, pathvar, token, cookies):
     lib3D = kicadlib.replace(".pretty", ".3dshapes")
@@ -266,6 +310,7 @@ def fetchLcsc(kicadlib, force, lcsc, pathvar):
     ensureKicadLib(kicadlib)
 
     cinfo = getComponentInfo(lcsc, token, cookies)
+    print(f"Component info:{cinfo}")
     if cinfo is None:
         raise RuntimeError(f"No component was found for the code {lcsc}")
     packageName = getComponentPackageName(cinfo)
@@ -275,12 +320,13 @@ def fetchLcsc(kicadlib, force, lcsc, pathvar):
         print(f"Nothing has been done. If you want to overwrite the package, run this command again with '--force'.")
         return
 
-    componentDetail, footprint = fetchAndConvert(cinfo, token, cookies)
+    componentDetail, footprint, symbol = fetchAndConvert(cinfo, token, cookies)
     models = fetchAndConvert3D(componentDetail, kicadlib, pathvar, token, cookies)
     for model in models:
         footprint.Add3DModel(model)
 
     pcbnew.FootprintSave(kicadlib, footprint)
+    shutil.move(symbol, f"{kicadlib.rsplit('/', 1)[0]}/{symbol}")
 
 @click.command()
 @click.argument("name")
