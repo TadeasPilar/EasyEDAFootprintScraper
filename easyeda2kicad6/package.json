@@ -1,0 +1,64 @@
+{
+  "name": "easyeda2kicad6",
+  "version": "1.0.0",
+  "bin": "dist/main.js",
+  "main": "dist/index.js",
+  "typings": "dist/index.d.ts",
+  "author": "yaybee",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yaybee/easyeda2kicad6.git"
+  },
+  "keywords": [
+    "kicad",
+    "easyeda",
+    "converter",
+    "conversion",
+    "pcb",
+    "schematics"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "lint": "tslint --project tsconfig.json",
+    "test": "jest"
+  },
+  "files": [
+    "dist"
+  ],
+  "devDependencies": {
+    "@types/jest": "^26.0.10",
+    "@types/node": "^12.20.4",
+    "@types/uuid": "^8.3.0",
+    "husky": "^3.0.9",
+    "jest": "^26.6.3",
+    "lint-staged": "^9.4.2",
+    "prettier": "^2.0.4",
+    "ts-jest": "^26.2.0",
+    "ts-node": "^8.5.0",
+    "tslint": "^5.20.1",
+    "typescript": "^3.9.7"
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  },
+  "lint-staged": {
+    "src/**/*.{ts,tsx}": [
+      "tslint --project tsconfig.spec.json -c tslint.commit.json --fix",
+      "prettier --write",
+      "git add"
+    ]
+  },
+  "engines": {
+    "node": ">= 8.0.0",
+    "npm": ">= 5.0.0"
+  },
+  "description": "easyeda2kicad6",
+  "bugs": {
+    "url": "https://github.com/yaybee/easyeda2kicad6/issues"
+  },
+  "homepage": "https://github.com/yaybee/easyeda2kicad6#readme"
+}

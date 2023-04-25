@@ -1,0 +1,9 @@
+.history
+.idea
+node_modules
+*.log
+*.kicad_pcb
+*.kicad_pcb-bak
+*.pro
+fp-info-cache
+*.sch
