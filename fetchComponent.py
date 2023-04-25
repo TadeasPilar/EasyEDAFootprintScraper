@@ -10,6 +10,7 @@ import subprocess
 import click
 from tempfile import TemporaryDirectory
 from pathlib import Path
+import parse
 
 class FormatError(RuntimeError):
     pass
@@ -19,20 +20,110 @@ class KicadSymbol:
     def __init__(self, raw_data):
         self.data = raw_data.split('\n')
 
-    def addField(field, data):
-        pass
+    def write(self, path):
+        with open(path, 'w') as file:
+            for line in self.data:
+                file.write(f"{line}\n")
+
+    def clearEmptySymbol(self):
+        for line in self.data:
+            if self.countBrackets(line) == 0 and "(symbol " in line:
+                print(f"Removing empty symbol line: {line}")
+                self.data.remove(line)
+
+    def countBrackets(self, line):
+        brackets = 0
+        for character in line:
+            if character == '(':
+                brackets = brackets+1
+            if character == ')':
+                brackets = brackets-1
+        return brackets
+    
+    def findLine(self, substring):
+        for line in self.data:
+            if substring in line:
+                return line
+
+    def findIncorrectSymbolName(self):
+        line = self.findLine("(symbol \"symbol:")
+        data = line.split('\"')[1]
+        data = data.replace("symbol:", '')
+        print(f"Incorrect name is {data}")
+        return data
+
+    def rename(self, old, new):
+        newData = []
+        for line in self.data:
+            newData.append(line.replace(old, new))
+        self.data = newData
+
+    def getID(self, line):
+        iid = parse.parse("{}(id {}){}", line)
+        return int(iid[1])
+
+    def findLastProperty(self):
+        propertyList = []
+        for line in self.data:
+            if " (id " in line:
+                if self.countBrackets(line) != 0:
+                    raise RuntimeError("Property must be oneline!")
+                propertyList.append(line)
+        m = -1
+        lastProp = None
+        for prop in propertyList:
+            iid = int(self.getID(prop))
+            if iid > m-1:
+                m = self.getID(prop)
+                lastProp = prop
+        return lastProp, m
+
+    def generatePropertyString(self, name, value, visible, id):
+        hide = ""
+        if not visible:
+            hide = "hide"
+        effects = f"      (effects (font (size 1.27 1.27)) {hide})"
+        return f"    (property \"{name}\" \"{value}\" (id {id}) (at 0 0 0)\n{effects}\n    )"
+
+    def findPropertyInsertIndex(self, lastProp):
+        if lastProp == None:
+            for i in range(len(self.data)):
+                if "(symbol \"" in self.data[i]:
+                    return int(i+1)
+        else:
+            return self.data.index(lastProp)+1
+
+    def addProperty(self, name, value, visible):
+        lastProp, m = self.findLastProperty()
+        propertyString = self.generatePropertyString(name, value, visible, m+1)
+        self.data.insert(self.findPropertyInsertIndex(lastProp), propertyString)
 
 
-def postProcessSymbol(kicadSymbol, partName):
-    os.rename(kicadSymbol, f"{partName}.lib")
 
-    with open(f"{partName}.lib", 'r') as file:
+
+def postProcessSymbol(kicadSymbol, componentInfo, footprintLibName):
+    partName = componentInfo["title"]
+
+    with open(kicadSymbol, 'r') as file:
         raw_data = file.read()
-    
-    symbol = KicadSymbol(raw_data)
-    
 
-    return f"{partName}.lib"
+    symbol = KicadSymbol(raw_data);    
+    
+    symbol.clearEmptySymbol()
+    oldName = symbol.findIncorrectSymbolName()
+    symbol.rename(f"symbol:{oldName}", partName)
+    symbol.rename(oldName, partName)
+    symbol.addProperty("Reference", "NONE?", True)
+    symbol.addProperty("Value", partName, True)
+    footprint = f"{footprintLibName.split('.')[0]}:{componentInfo['dataStr']['head']['c_para']['package']}"
+    symbol.addProperty("Footprint", footprint, False)
+    lcsc = componentInfo['lcsc']['number']
+    symbol.addProperty("Datasheet", f"https://jlcpcb.com/partdetail/{lcsc}", False)
+    symbol.addProperty("LCSC", lcsc, True)
+    symbol.addProperty("JLCPCB_CORRECTION", "0;0;0", False)
+    symbol.addProperty("PRICE", componentInfo['lcsc']['price'], False)
+
+    return symbol
 
 
 def easyEdaHeaders(token):
@@ -176,7 +267,7 @@ def parseLC2KiCadOutput(text):
             return filename
 
 
-def easyEdaToKicad(symbolJson, boardJson):
+def easyEdaToKicad(symbolJson, boardJson, partName, kicadlib):
     """
     Convert board JSON, return pcbnew.BOARD
     """
@@ -190,12 +281,15 @@ def easyEdaToKicad(symbolJson, boardJson):
             easyFile.write(json.dumps(boardJson, indent=4))
         subprocess.check_call(["easyeda2kicad", boardFilename, kicadFilename])
 
-        out = subprocess.check_output(["./LC2KiCad/build/lc2kicad", "-v", symbolFilename, "-a", "ENL:1"], stderr=subprocess.STDOUT)
-
-        symbolName = parseLC2KiCadOutput(out)
+        #out = subprocess.check_output(["./LC2KiCad/build/lc2kicad", "-v", symbolFilename, "-a", "ENL:1"], stderr=subprocess.STDOUT)
+        
+        out = subprocess.check_output(["node", "./easyeda2kicad6/dist/main.js", symbolFilename], stderr=subprocess.STDOUT)
+        #symbolName = parseLC2KiCadOutput(out)
+        symbolName = f"{tmpDir}/symbol/symbol.kicad_sym"
         print(f"Symbol name: {symbolName}")
+        os.rename(symbolName, f"{kicadlib.rsplit('/', 1)[0]}/{partName}.kicad_sym")
 
-        return pcbnew.LoadBoard(kicadFilename), symbolName
+        return pcbnew.LoadBoard(kicadFilename), f"{kicadlib.rsplit('/', 1)[0]}/{partName}.kicad_sym"
 
 def validateLibName(lib):
     if not lib.endswith(".pretty"):
@@ -244,16 +338,17 @@ def footprintExists(lib, name):
 
 
 
-def fetchAndConvert(componentInfo, token, cookies):
+def fetchAndConvert(componentInfo, token, cookies, kicadlib):
     uuid = componentInfo["dataStr"]["head"]["uuid"]
     details = fetchCompnentDetails(uuid, token, cookies)
     schSymbol = getComponentSymbol(details)
     package = getComponentPackage(details)
     packageBoard = buildPackageBoard(package)
-    kicadBoard, kicadSymbol = easyEdaToKicad(schSymbol, packageBoard)
+    kicadBoard, kicadSymbol = easyEdaToKicad(schSymbol, packageBoard, componentInfo["title"], kicadlib)
     footprint = extractFirstFootprint(kicadBoard)
     postProcessFootprint(footprint)
-    symbol = postProcessSymbol(kicadSymbol, componentInfo["title"])
+    footprintLibName = kicadlib.split('/')[1]
+    symbol = postProcessSymbol(kicadSymbol, componentInfo, footprintLibName)
 
     return details, footprint, symbol
 
@@ -320,13 +415,14 @@ def fetchLcsc(kicadlib, force, lcsc, pathvar):
         print(f"Nothing has been done. If you want to overwrite the package, run this command again with '--force'.")
         return
 
-    componentDetail, footprint, symbol = fetchAndConvert(cinfo, token, cookies)
+    componentDetail, footprint, symbol = fetchAndConvert(cinfo, token, cookies, kicadlib)
     models = fetchAndConvert3D(componentDetail, kicadlib, pathvar, token, cookies)
     for model in models:
         footprint.Add3DModel(model)
 
     pcbnew.FootprintSave(kicadlib, footprint)
-    shutil.move(symbol, f"{kicadlib.rsplit('/', 1)[0]}/{symbol}")
+    symbol.write(f"{kicadlib.split('/')[0]}/{cinfo['title']}.kicad_sym")
+    
 
 @click.command()
 @click.argument("name")
